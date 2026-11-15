@@ -158,9 +158,9 @@ The extension strips the `https://` part and keeps the host and path.
 
 ## Privacy
 
-- Your block list is stored in Chrome’s storage for your browser profile.
-- This extension does not send your list to an outside server.
-- If you use Chrome Sync, Chrome itself may sync extension data with your Google account according to your Chrome settings.
+Your block list stays in Chrome storage for your profile. This extension does not send it to an outside server. If Chrome Sync is on, Chrome may sync that data with your Google account per your Chrome settings.
+
+Full details: [PRIVACY.md](PRIVACY.md)
 
 ---
 
