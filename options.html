@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Custom URL Blocker</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Custom URL Blocker</h1>
+      <p class="subtitle">
+        Add a domain (example.com) or a specific path (example.com/page) to block.
+      </p>
+
+      <form id="add-form" class="add-form">
+        <label class="sr-only" for="entry-input">URL or domain</label>
+        <input
+          id="entry-input"
+          type="text"
+          placeholder="example.com or example.com/path"
+          autocomplete="off"
+          required
+        />
+        <button type="submit">Add</button>
+      </form>
+
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+
+      <section aria-labelledby="list-heading">
+        <h2 id="list-heading">Blocked entries</h2>
+        <ul id="entry-list" class="entry-list"></ul>
+        <p id="empty-state" class="empty-state hidden">No blocked entries yet.</p>
+      </section>
+    </main>
+
+    <script src="options.js"></script>
+  </body>
+</html>

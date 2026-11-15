@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Custom URL Blocker",
+  "version": "1.0",
+  "description": "Blocks a specific list of URLs and domains using declarativeNetRequest.",
+  "permissions": [
+    "storage",
+    "declarativeNetRequest"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_page": "options.html"
+}
