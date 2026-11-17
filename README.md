@@ -43,6 +43,40 @@ You do not need to edit these files for everyday use. Here is what each one is f
 | `options.html` | The settings page you see when managing your list |
 | `options.js` | The logic behind adding and removing items |
 | `options.css` | The look and layout of the settings page |
+| `policy.js` | Reads the admin policy (if any) and decides what is blocked and whether the list can be edited |
+| `managed_schema.json` | Tells Chrome which settings an admin can set from the Admin console |
+| `admin-policy.example.json` | A copy-paste example for the Admin console “Policy for extensions” box |
+
+---
+
+## For school / organization admins (force-installed)
+
+When the extension is force-installed from the Google Admin console, the **admin** controls the block list through extension policy. Students see the list on the Options page but cannot add or remove anything.
+
+1. Google Admin console → **Devices → Chrome → Apps & extensions → Users & browsers**.
+2. Select the org unit, then select **Custom URL Blocker** (installation policy: **Force install**).
+3. In the right panel, find **Policy for extensions** and paste JSON like this (see `admin-policy.example.json`):
+
+```json
+{
+  "blockedEntries": { "Value": ["example.com", "scratch.mit.edu/search"] },
+  "allowUserEntries": { "Value": false }
+}
+```
+
+4. Save. Devices pick up the change on the next policy refresh (or run `chrome://policy` → **Reload policies** on a test device).
+
+| Policy key | Type | Effect |
+|---|---|---|
+| `blockedEntries` | list of strings | Enforced block list. When present, the extension is in **managed mode** and this list cannot be removed by users. An empty array still enters managed/locked mode (nothing blocked, but users cannot edit). |
+| `allowUserEntries` | true/false | Default `false` (fully locked). If `true`, users may add extra personal entries on top of the admin list, but still cannot remove admin entries. |
+
+How it works: the admin list is read from `chrome.storage.managed`, which is read-only to the extension and to users. The block rules are always rebuilt from that list, so changes to the personal (sync) list can never remove an admin entry. If no policy is set, the extension behaves exactly as before (personal list).
+
+Hardening tips:
+
+- Keep **Developer tools availability** at its default for managed users ("Never allow use of built-in developer tools on force-installed extensions") so students cannot run code inside the extension.
+- Keep `chrome://extensions` blocked for students if you do not want them to see the extension card at all.
 
 ---
 
@@ -76,11 +110,15 @@ If that works, the extension is set up correctly.
 
 ## How to manage your block list
 
+On a personal (unmanaged) install:
+
 1. Open the extension **Options** page.
 2. In the text box, type a website or page path.
 3. Click **Add**.
 4. The item appears in **Blocked entries**.
 5. To unblock something, click **Remove** next to that item.
+
+If the extension is managed by your organization, the Options page may hide Add/Remove and show admin-set entries as read-only.
 
 Notes:
 

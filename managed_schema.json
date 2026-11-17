@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "blockedEntries": {
+      "title": "Blocked entries",
+      "description": "Domains or paths to block (e.g. example.com, example.com/page). When set, this list is enforced and students cannot remove it.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "allowUserEntries": {
+      "title": "Allow user entries",
+      "description": "If true, users may add their own extra entries on top of the admin list. They can never remove admin entries. Default: false.",
+      "type": "boolean"
+    }
+  }
+}

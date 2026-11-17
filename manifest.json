@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Custom URL Blocker",
-  "version": "1.0",
-  "description": "Blocks a specific list of URLs and domains using declarativeNetRequest.",
+  "version": "1.1",
+  "description": "Blocks a list of URLs and domains. Supports an admin-managed block list via Google Admin console policy.",
   "permissions": [
     "storage",
     "declarativeNetRequest"
@@ -10,5 +10,8 @@
   "background": {
     "service_worker": "background.js"
   },
-  "options_page": "options.html"
+  "options_page": "options.html",
+  "storage": {
+    "managed_schema": "managed_schema.json"
+  }
 }

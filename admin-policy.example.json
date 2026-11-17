@@ -1,0 +1,11 @@
+{
+  "blockedEntries": {
+    "Value": [
+      "example.com",
+      "scratch.mit.edu/search"
+    ]
+  },
+  "allowUserEntries": {
+    "Value": false
+  }
+}

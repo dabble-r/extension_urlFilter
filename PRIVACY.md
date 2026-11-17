@@ -1,6 +1,6 @@
 # Privacy Policy — Custom URL Blocker
 
-**Last updated:** November 15, 2026
+**Last updated:** November 16, 2026
 
 This privacy policy describes how the **Custom URL Blocker** Chrome extension (“the Extension”) handles information.
 
@@ -14,7 +14,7 @@ When you use the Extension, it stores:
 
 - **Blocked entries** — domains, paths, or URLs you add on the Options page (for example, `example.com` or `example.com/page`)
 
-That list is saved in Chrome’s **sync storage** for your browser profile (`chrome.storage.sync`).
+That list is saved in Chrome’s **sync storage** for your browser profile (`chrome.storage.sync`). If your organization manages the Extension, the administrator’s list is delivered by Chrome policy and read from `chrome.storage.managed` as read-only local policy storage; the Extension does not send it anywhere.
 
 The Extension does not collect names, email addresses, payment information, location, browsing history beyond applying your block rules, or other personal contact details.
 

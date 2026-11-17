@@ -1,0 +1,534 @@
+From 39c935a3d2b240f2c2be58c925305d4b00795222 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 16 Nov 2026 08:33:40 -0800
+Subject: [PATCH] Add admin-managed block list via chrome.storage.managed
+
+- managed_schema.json: blockedEntries + allowUserEntries policy keys
+- policy.js: shared logic; admin policy overrides personal list
+- background.js: rules always rebuilt from admin+allowed user entries; reacts to policy changes
+- options page: read-only when managed, admin entries non-removable
+- README/PRIVACY: admin setup docs
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01NP4BhvR5oeCC6SaDj53Sra
+---
+ PRIVACY.md                |   2 +-
+ README.md                 |  34 ++++++++++
+ admin-policy.example.json |  11 ++++
+ background.js             |  44 ++++++++-----
+ managed_schema.json       |  16 +++++
+ manifest.json             |   9 ++-
+ options.css               |  16 +++++
+ options.html              |   5 ++
+ options.js                | 126 +++++++++++++++++++++++---------------
+ policy.js                 |  63 +++++++++++++++++++
+ 10 files changed, 258 insertions(+), 68 deletions(-)
+ create mode 100644 admin-policy.example.json
+ create mode 100644 managed_schema.json
+ create mode 100644 policy.js
+
+diff --git a/PRIVACY.md b/PRIVACY.md
+index 89cb7ce..5d93300 100644
+--- a/PRIVACY.md
++++ b/PRIVACY.md
+@@ -14,7 +14,7 @@ When you use the Extension, it stores:
+ 
+ - **Blocked entries** — domains, paths, or URLs you add on the Options page (for example, `example.com` or `example.com/page`)
+ 
+-That list is saved in Chrome’s **sync storage** for your browser profile (`chrome.storage.sync`).
++That list is saved in Chrome’s **sync storage** for your browser profile (`chrome.storage.sync`). If your organization manages the Extension, the administrator’s list is delivered by Chrome policy and read from `chrome.storage.managed`; it is not sent anywhere by the Extension.
+ 
+ The Extension does not collect names, email addresses, payment information, location, browsing history beyond applying your block rules, or other personal contact details.
+ 
+diff --git a/README.md b/README.md
+index c620f63..5d6b365 100644
+--- a/README.md
++++ b/README.md
+@@ -43,6 +43,40 @@ You do not need to edit these files for everyday use. Here is what each one is f
+ | `options.html` | The settings page you see when managing your list |
+ | `options.js` | The logic behind adding and removing items |
+ | `options.css` | The look and layout of the settings page |
++| `policy.js` | Reads the admin policy (if any) and decides what is blocked and whether the list can be edited |
++| `managed_schema.json` | Tells Chrome which settings an admin can set from the Admin console |
++| `admin-policy.example.json` | A copy-paste example for the Admin console “Policy for extensions” box |
++
++---
++
++## For school / organization admins (force-installed)
++
++When the extension is force-installed from the Google Admin console, the **admin** controls the block list through extension policy. Students see the list on the Options page but cannot add or remove anything.
++
++1. Google Admin console → **Devices → Chrome → Apps & extensions → Users & browsers**.
++2. Select the org unit, then select **Custom URL Blocker** (installation policy: **Force install**).
++3. In the right panel, find **Policy for extensions** and paste JSON like this (see `admin-policy.example.json`):
++
++```json
++{
++  "blockedEntries": { "Value": ["example.com", "scratch.mit.edu/search"] },
++  "allowUserEntries": { "Value": false }
++}
++```
++
++4. Save. Devices pick up the change on the next policy refresh (or run `chrome://policy` → **Reload policies** on a test device).
++
++| Policy key | Type | Effect |
++|---|---|---|
++| `blockedEntries` | list of strings | Enforced block list. When present, the extension is in **managed mode** and this list cannot be removed by users. |
++| `allowUserEntries` | true/false | Default `false` (fully locked). If `true`, users may add extra personal entries on top of the admin list, but still cannot remove admin entries. |
++
++How it works: the admin list is read from `chrome.storage.managed`, which is read-only to the extension and to users. The block rules are always rebuilt from that list, so changes to the personal (sync) list can never remove an admin entry. If no policy is set, the extension behaves exactly as before (personal list).
++
++Hardening tips:
++
++- Keep **Developer tools availability** at its default for managed users ("Never allow use of built-in developer tools on force-installed extensions") so students cannot run code inside the extension.
++- Keep `chrome://extensions` blocked for students if you do not want them to see the extension card at all.
+ 
+ ---
+ 
+diff --git a/admin-policy.example.json b/admin-policy.example.json
+new file mode 100644
+index 0000000..123dbdd
+--- /dev/null
++++ b/admin-policy.example.json
+@@ -0,0 +1,11 @@
++{
++  "blockedEntries": {
++    "Value": [
++      "example.com",
++      "scratch.mit.edu/search"
++    ]
++  },
++  "allowUserEntries": {
++    "Value": false
++  }
++}
+diff --git a/background.js b/background.js
+index 9974ddd..ee64035 100644
+--- a/background.js
++++ b/background.js
+@@ -1,4 +1,5 @@
+-const STORAGE_KEY = "blockedEntries";
++importScripts("policy.js");
++
+ const DEFAULT_ENTRIES = ["example.com"];
+ 
+ /**
+@@ -68,16 +69,19 @@ function entriesToRules(entries) {
+   return rules;
+ }
+ 
+-async function getBlockedEntries() {
++/**
++ * Seed the personal list with a starter entry, but only for unmanaged installs.
++ * Never touch storage when an admin policy is present.
++ */
++async function seedDefaultsIfNeeded() {
++  const policy = await getManagedPolicy();
++  if (Array.isArray(policy[STORAGE_KEY])) {
++    return;
++  }
+   const result = await chrome.storage.sync.get(STORAGE_KEY);
+-  const entries = result[STORAGE_KEY];
+-
+-  if (!Array.isArray(entries) || entries.length === 0) {
++  if (!Array.isArray(result[STORAGE_KEY])) {
+     await chrome.storage.sync.set({ [STORAGE_KEY]: DEFAULT_ENTRIES });
+-    return [...DEFAULT_ENTRIES];
+   }
+-
+-  return entries;
+ }
+ 
+ async function syncDynamicRules(entries) {
+@@ -96,9 +100,14 @@ async function syncDynamicRules(entries) {
+   });
+ }
+ 
++async function applyCurrentState() {
++  const state = await getBlockState();
++  await syncDynamicRules(state.effectiveEntries);
++}
++
+ async function initialize() {
+-  const entries = await getBlockedEntries();
+-  await syncDynamicRules(entries);
++  await seedDefaultsIfNeeded();
++  await applyCurrentState();
+ }
+ 
+ chrome.runtime.onInstalled.addListener(() => {
+@@ -113,19 +122,22 @@ chrome.runtime.onStartup.addListener(() => {
+   });
+ });
+ 
++// Re-apply whenever the admin policy (managed) or personal list (sync) changes.
++// Always rebuild from getBlockState() so a sync write can never override
++// or remove admin entries.
+ chrome.storage.onChanged.addListener((changes, areaName) => {
+-  if (areaName !== "sync" || !changes[STORAGE_KEY]) {
++  if (areaName !== "managed" && areaName !== "sync") {
+     return;
+   }
+-
+-  const nextEntries = changes[STORAGE_KEY].newValue;
+-  const entries = Array.isArray(nextEntries) ? nextEntries : [];
+-
+-  syncDynamicRules(entries).catch((error) => {
++  if (!changes[STORAGE_KEY] && !changes[ALLOW_USER_KEY]) {
++    return;
++  }
++  applyCurrentState().catch((error) => {
+     console.error("Failed to sync dynamic rules:", error);
+   });
+ });
+ 
++// Runs every time the service worker wakes, re-asserting the rules.
+ initialize().catch((error) => {
+   console.error("Failed to initialize service worker:", error);
+ });
+diff --git a/managed_schema.json b/managed_schema.json
+new file mode 100644
+index 0000000..bdd2a14
+--- /dev/null
++++ b/managed_schema.json
+@@ -0,0 +1,16 @@
++{
++  "type": "object",
++  "properties": {
++    "blockedEntries": {
++      "title": "Blocked entries",
++      "description": "Domains or paths to block (e.g. example.com, example.com/page). When set, this list is enforced and students cannot remove it.",
++      "type": "array",
++      "items": { "type": "string" }
++    },
++    "allowUserEntries": {
++      "title": "Allow user entries",
++      "description": "If true, users may add their own extra entries on top of the admin list. They can never remove admin entries. Default: false.",
++      "type": "boolean"
++    }
++  }
++}
+diff --git a/manifest.json b/manifest.json
+index a23c155..cbd9d74 100644
+--- a/manifest.json
++++ b/manifest.json
+@@ -1,8 +1,8 @@
+ {
+   "manifest_version": 3,
+   "name": "Custom URL Blocker",
+-  "version": "1.0",
+-  "description": "Blocks a specific list of URLs and domains using declarativeNetRequest.",
++  "version": "1.1",
++  "description": "Blocks a list of URLs and domains. Supports an admin-managed block list via Google Admin console policy.",
+   "permissions": [
+     "storage",
+     "declarativeNetRequest"
+@@ -10,5 +10,8 @@
+   "background": {
+     "service_worker": "background.js"
+   },
+-  "options_page": "options.html"
++  "options_page": "options.html",
++  "storage": {
++    "managed_schema": "managed_schema.json"
++  }
+ }
+diff --git a/options.css b/options.css
+index 80aa0e4..b3c2a9d 100644
+--- a/options.css
++++ b/options.css
+@@ -156,3 +156,19 @@ h2 {
+   white-space: nowrap;
+   border: 0;
+ }
++
++.managed-banner {
++  margin: 0 0 1.25rem;
++  padding: 0.6rem 0.75rem;
++  border: 1px solid var(--border);
++  border-left: 4px solid var(--accent);
++  background: var(--bg);
++  font-size: 0.9rem;
++}
++
++.entry-list .badge {
++  flex-shrink: 0;
++  font-family: inherit;
++  font-size: 0.8rem;
++  color: var(--muted);
++}
+diff --git a/options.html b/options.html
+index 8a7a17f..633a6a3 100644
+--- a/options.html
++++ b/options.html
+@@ -13,6 +13,10 @@
+         Add a domain (example.com) or a specific path (example.com/page) to block.
+       </p>
+ 
++      <p id="managed-banner" class="managed-banner hidden" role="note">
++        This block list is managed by your school administrator.
++      </p>
++
+       <form id="add-form" class="add-form">
+         <label class="sr-only" for="entry-input">URL or domain</label>
+         <input
+@@ -34,6 +38,7 @@
+       </section>
+     </main>
+ 
++    <script src="policy.js"></script>
+     <script src="options.js"></script>
+   </body>
+ </html>
+diff --git a/options.js b/options.js
+index dd4c610..bd6abee 100644
+--- a/options.js
++++ b/options.js
+@@ -1,97 +1,127 @@
+-const STORAGE_KEY = "blockedEntries";
++// STORAGE_KEY, getBlockState() come from policy.js
+ 
+ const form = document.getElementById("add-form");
+ const input = document.getElementById("entry-input");
+ const list = document.getElementById("entry-list");
+ const emptyState = document.getElementById("empty-state");
+ const statusEl = document.getElementById("status");
++const managedBanner = document.getElementById("managed-banner");
++const subtitle = document.querySelector(".subtitle");
++
++let state = null;
+ 
+ function setStatus(message, isError = false) {
+   statusEl.textContent = message;
+   statusEl.classList.toggle("error", isError);
+ }
+ 
+-function normalizeEntry(value) {
+-  return value.trim();
+-}
+-
+-async function getEntries() {
+-  const result = await chrome.storage.sync.get(STORAGE_KEY);
+-  return Array.isArray(result[STORAGE_KEY]) ? result[STORAGE_KEY] : [];
+-}
+-
+-async function saveEntries(entries) {
++async function saveUserEntries(entries) {
++  // Re-check right before writing in case the admin policy changed.
++  const fresh = await getBlockState();
++  if (!fresh.canEdit) {
++    throw new Error("locked");
++  }
+   await chrome.storage.sync.set({ [STORAGE_KEY]: entries });
+ }
+ 
+-function renderEntries(entries) {
+-  list.innerHTML = "";
++function makeRow(entry, removable) {
++  const li = document.createElement("li");
+ 
+-  if (entries.length === 0) {
+-    emptyState.classList.remove("hidden");
+-    return;
+-  }
+-
+-  emptyState.classList.add("hidden");
+-
+-  for (const entry of entries) {
+-    const li = document.createElement("li");
+-
+-    const label = document.createElement("span");
+-    label.textContent = entry;
++  const label = document.createElement("span");
++  label.textContent = entry;
++  li.appendChild(label);
+ 
++  if (removable) {
+     const removeBtn = document.createElement("button");
+     removeBtn.type = "button";
+     removeBtn.textContent = "Remove";
+     removeBtn.addEventListener("click", async () => {
+-      const current = await getEntries();
+-      const next = current.filter(
++      const next = state.userEntries.filter(
+         (item) => item.toLowerCase() !== entry.toLowerCase()
+       );
+-      await saveEntries(next);
+-      renderEntries(next);
+-      setStatus(`Removed ${entry}`);
++      try {
++        await saveUserEntries(next);
++        setStatus(`Removed ${entry}`);
++      } catch {
++        setStatus("This list is managed by your administrator.", true);
++      }
++      await refresh();
+     });
+-
+-    li.appendChild(label);
+     li.appendChild(removeBtn);
+-    list.appendChild(li);
++  } else if (state.managed) {
++    const badge = document.createElement("span");
++    badge.className = "badge";
++    badge.textContent = "Set by admin";
++    li.appendChild(badge);
+   }
++
++  return li;
++}
++
++function render() {
++  list.innerHTML = "";
++
++  managedBanner.classList.toggle("hidden", !state.managed);
++  form.classList.toggle("hidden", !state.canEdit);
++  subtitle.classList.toggle("hidden", !state.canEdit);
++
++  const adminKeys = new Set(state.adminEntries.map((e) => e.toLowerCase()));
++  const rows = [
++    ...state.adminEntries.map((e) => makeRow(e, false)),
++    ...state.userEntries
++      .filter((e) => !adminKeys.has(e.toLowerCase()))
++      .map((e) => makeRow(e, state.canEdit))
++  ];
++
++  emptyState.classList.toggle("hidden", rows.length > 0);
++  rows.forEach((row) => list.appendChild(row));
++}
++
++async function refresh() {
++  state = await getBlockState();
++  render();
+ }
+ 
+ form.addEventListener("submit", async (event) => {
+   event.preventDefault();
++  if (!state.canEdit) {
++    setStatus("This list is managed by your administrator.", true);
++    return;
++  }
+ 
+-  const entry = normalizeEntry(input.value);
++  const entry = input.value.trim();
+   if (!entry) {
+     setStatus("Enter a URL or domain.", true);
+     return;
+   }
+ 
+-  const entries = await getEntries();
+-  const exists = entries.some(
++  const exists = state.effectiveEntries.some(
+     (item) => item.toLowerCase() === entry.toLowerCase()
+   );
+-
+   if (exists) {
+     setStatus("That entry is already blocked.", true);
+     return;
+   }
+ 
+-  const next = [...entries, entry];
+-  await saveEntries(next);
+-  renderEntries(next);
+-  input.value = "";
+-  input.focus();
+-  setStatus(`Added ${entry}`);
++  try {
++    await saveUserEntries([...state.userEntries, entry]);
++    input.value = "";
++    input.focus();
++    setStatus(`Added ${entry}`);
++  } catch {
++    setStatus("This list is managed by your administrator.", true);
++  }
++  await refresh();
+ });
+ 
+-async function init() {
+-  const entries = await getEntries();
+-  renderEntries(entries);
+-}
++// Live-update if the admin pushes a new policy while the page is open.
++chrome.storage.onChanged.addListener((changes, areaName) => {
++  if (areaName === "managed" || areaName === "sync") {
++    refresh().catch(console.error);
++  }
++});
+ 
+-init().catch((error) => {
++refresh().catch((error) => {
+   console.error(error);
+   setStatus("Failed to load blocked entries.", true);
+ });
+diff --git a/policy.js b/policy.js
+new file mode 100644
+index 0000000..7ee2031
+--- /dev/null
++++ b/policy.js
+@@ -0,0 +1,63 @@
++// Shared by background.js (via importScripts) and options.html (via <script>).
++// Source of truth:
++//   1. chrome.storage.managed  -> set by the Google Admin console (read-only to the extension/user)
++//   2. chrome.storage.sync     -> personal list, only used when no admin policy exists
++//                                 (or when the admin sets allowUserEntries: true)
++
++const STORAGE_KEY = "blockedEntries";
++const ALLOW_USER_KEY = "allowUserEntries";
++
++async function getManagedPolicy() {
++  try {
++    if (!chrome.storage.managed) {
++      return {};
++    }
++    return (await chrome.storage.managed.get([STORAGE_KEY, ALLOW_USER_KEY])) || {};
++  } catch (error) {
++    // Unmanaged browsers on some platforms throw here; treat as "no policy".
++    return {};
++  }
++}
++
++function cleanList(value) {
++  if (!Array.isArray(value)) {
++    return [];
++  }
++  const seen = new Set();
++  const out = [];
++  for (const item of value) {
++    if (typeof item !== "string") continue;
++    const trimmed = item.trim();
++    const key = trimmed.toLowerCase();
++    if (!trimmed || seen.has(key)) continue;
++    seen.add(key);
++    out.push(trimmed);
++  }
++  return out;
++}
++
++/**
++ * Returns the current mode and lists.
++ * {
++ *   managed: boolean,          // admin policy present
++ *   canEdit: boolean,          // whether the options page may write to sync
++ *   adminEntries: string[],    // enforced, never removable by the user
++ *   userEntries: string[],     // personal entries (ignored when locked)
++ *   effectiveEntries: string[] // what is actually blocked
++ * }
++ */
++async function getBlockState() {
++  const policy = await getManagedPolicy();
++  const managed = Array.isArray(policy[STORAGE_KEY]);
++  const adminEntries = managed ? cleanList(policy[STORAGE_KEY]) : [];
++  const canEdit = !managed || policy[ALLOW_USER_KEY] === true;
++
++  let userEntries = [];
++  if (canEdit) {
++    const result = await chrome.storage.sync.get(STORAGE_KEY);
++    userEntries = cleanList(result[STORAGE_KEY]);
++  }
++
++  const effectiveEntries = cleanList([...adminEntries, ...userEntries]);
++  return { managed, canEdit, adminEntries, userEntries, effectiveEntries };
++}
+-- 
+2.43.0
+

@@ -1,4 +1,5 @@
-const STORAGE_KEY = "blockedEntries";
+importScripts("policy.js");
+
 const DEFAULT_ENTRIES = ["example.com"];
 
 /**
@@ -68,16 +69,19 @@ function entriesToRules(entries) {
   return rules;
 }
 
-async function getBlockedEntries() {
-  const result = await chrome.storage.sync.get(STORAGE_KEY);
-  const entries = result[STORAGE_KEY];
-
-  if (!Array.isArray(entries) || entries.length === 0) {
-    await chrome.storage.sync.set({ [STORAGE_KEY]: DEFAULT_ENTRIES });
-    return [...DEFAULT_ENTRIES];
+/**
+ * Seed the personal list with a starter entry, but only for unmanaged installs.
+ * Never touch storage when an admin policy is present.
+ */
+async function seedDefaultsIfNeeded() {
+  const policy = await getManagedPolicy();
+  if (Array.isArray(policy[STORAGE_KEY])) {
+    return;
   }
-
-  return entries;
+  const result = await chrome.storage.sync.get(STORAGE_KEY);
+  if (!Array.isArray(result[STORAGE_KEY])) {
+    await chrome.storage.sync.set({ [STORAGE_KEY]: DEFAULT_ENTRIES });
+  }
 }
 
 async function syncDynamicRules(entries) {
@@ -96,9 +100,14 @@ async function syncDynamicRules(entries) {
   });
 }
 
+async function applyCurrentState() {
+  const state = await getBlockState();
+  await syncDynamicRules(state.effectiveEntries);
+}
+
 async function initialize() {
-  const entries = await getBlockedEntries();
-  await syncDynamicRules(entries);
+  await seedDefaultsIfNeeded();
+  await applyCurrentState();
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -113,19 +122,22 @@ chrome.runtime.onStartup.addListener(() => {
   });
 });
 
+// Re-apply whenever the admin policy (managed) or personal list (sync) changes.
+// Always rebuild from getBlockState() so a sync write can never override
+// or remove admin entries.
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== "sync" || !changes[STORAGE_KEY]) {
+  if (areaName !== "managed" && areaName !== "sync") {
     return;
   }
-
-  const nextEntries = changes[STORAGE_KEY].newValue;
-  const entries = Array.isArray(nextEntries) ? nextEntries : [];
-
-  syncDynamicRules(entries).catch((error) => {
+  if (!changes[STORAGE_KEY] && !changes[ALLOW_USER_KEY]) {
+    return;
+  }
+  applyCurrentState().catch((error) => {
     console.error("Failed to sync dynamic rules:", error);
   });
 });
 
+// Runs every time the service worker wakes, re-asserting the rules.
 initialize().catch((error) => {
   console.error("Failed to initialize service worker:", error);
 });
